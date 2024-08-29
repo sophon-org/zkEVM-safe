@@ -2,6 +2,10 @@
 
 zkEVM-safe is a command-line tool for analyzing EVM smart contract bytecode to detect incompatible opcodes for zkEVM. It supports both Foundry and Hardhat project structures and allows customization of unsupported opcodes.
 
+## Motivation
+
+This tool was developed to address the growing need for efficient zkEVM compatibility checks as more contracts are ported to this emerging technology.
+
 ## Features
 
 - **Support for Foundry and Hardhat JSON structures**: Automatically detects and uses the appropriate JSON path style based on the structure of the file.
