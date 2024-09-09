@@ -35,6 +35,8 @@ This tool was developed to address the growing need for efficient zkEVM compatib
 
 ### Basic Usage
 
+The tool can run on a folder on fetch code from a deployed contract.
+
 To run the tool on a folder using Foundry settings:
 
 ```bash
@@ -61,6 +63,14 @@ To run the tool on a folder using Hardhat settings:
   - Example: `--json-path deployedBytecode`
   - Example: `--json-path deployedBytecode.object`
 
+To run the tool on a deployed contract:
+
+```bash
+./target/release/zkevm-safe --address 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48 --rpc-url https://eth.llamarpc.com
+```
+
+## Common options
+
 - **`--add-opcode (-A)`**: Add custom opcodes to the list of unsupported opcodes. You can add multiple opcodes by repeating the flag.
   - Example: `--add-opcode DELEGATECALL --add-opcode STATICCALL`
 
@@ -82,10 +92,6 @@ zkevm-safe --folder out
 ```
 
 ### Check using Hardhat settings:
-
-```bash
-zkevm-safe --folder artifacts --artifacts hardhat
-```
 
 ```bash
 zkevm-safe --folder artifacts --artifacts hardhat

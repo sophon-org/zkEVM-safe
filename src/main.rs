@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use walkdir::WalkDir;
+use reqwest::blocking::Client;
 
 fn silent_disassemble_bytes(bytes: Vec<u8>, verbose: bool) -> Result<(Vec<Operation>, String), Box<dyn Error>> {
     if verbose {
@@ -39,6 +40,34 @@ fn silent_disassemble_bytes(bytes: Vec<u8>, verbose: bool) -> Result<(Vec<Operat
     }
 }
 
+fn fetch_bytecode_from_chain(rpc_url: &str, address: &str, verbose: bool) -> Result<String, Box<dyn Error>> {
+    let client = Client::new();
+    let params = format!(
+        r#"{{"jsonrpc":"2.0","method":"eth_getCode","params":["{}", "latest"],"id":1}}"#,
+        address
+    );
+
+    let response = client
+        .post(rpc_url)
+        .header("Content-Type", "application/json")
+        .body(params)
+        .send()?;
+
+    let response_json: Value = response.json()?;
+
+    if let Some(bytecode) = response_json.get("result").and_then(Value::as_str) {
+        if bytecode == "0x" {
+            return Err("Contract not found at this address".into());
+        }
+        if verbose {
+            println!("Fetched bytecode for address {}: {}", address, bytecode);
+        }
+        Ok(bytecode.to_string())
+    } else {
+        Err("Failed to fetch bytecode or unexpected response format".into())
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("bytecode_checker")
         .version("1.0")
@@ -65,6 +94,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .long("json-path")
                 .value_name("JSON_PATH")
                 .help("Specify the JSON path to the bytecode object. [default: deployedBytecode.object]"),
+        )
+        .arg(
+            Arg::new("address")
+                .long("address")
+                .value_name("ADDRESS")
+                .help("Specify the contract address to fetch bytecode from"),
+        )
+        .arg(
+            Arg::new("rpc_url")
+                .long("rpc-url")
+                .value_name("RPC_URL")
+                .help("Specify the RPC URL to fetch bytecode [default: https://rpc.flashbots.net]")
+                .default_value("https://rpc.flashbots.net")
+                .requires("address"),
         )
         .arg(
             Arg::new("add_opcode")
@@ -150,6 +193,97 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut disassembler_logs = Vec::new();
     let mut is_zkevm_safe = true;
     let mut contracts_with_unsupported_opcodes = 0;
+
+    // Check if fetching from blockchain (address provided)
+    if let Some(address) = matches.get_one::<String>("address") {
+        let rpc_url = matches.get_one::<String>("rpc_url").unwrap();
+        let bytecode = match fetch_bytecode_from_chain(rpc_url, address, verbose) {
+            Ok(code) => code,
+            Err(e) => {
+                error_log.push_str(&format!("Error fetching bytecode for address {}: {}\n", address, e));
+                if verbose {
+                    eprintln!("Error fetching bytecode for address {}: {}", address, e);
+                }
+                return Ok(());
+            }
+        };
+
+        // Process fetched bytecode
+        let bytecode_without_prefix = bytecode.trim_start_matches("0x");
+        let bytes = match hex::decode(bytecode_without_prefix) {
+            Ok(b) => b,
+            Err(e) => {
+                error_log.push_str(&format!("Error decoding bytecode for address {}: {}\n", address, e));
+                if verbose {
+                    eprintln!("Error decoding bytecode for address {}: {}", address, e);
+                }
+                return Ok(());
+            }
+        };
+
+        // Disassemble and process opcodes
+        let (instructions, disassembler_output) = match silent_disassemble_bytes(bytes, verbose) {
+            Ok((i, output)) => (i, output),
+            Err(e) => {
+                error_log.push_str(&format!("Error disassembling bytecode for address {}: {}\n", address, e));
+                if verbose {
+                    eprintln!("Error disassembling bytecode for address {}: {}", address, e);
+                }
+                return Ok(());
+            }
+        };
+
+        // Check for incompatible opcodes
+        let mut found_incompatible = HashSet::new();
+        for instruction in &instructions {
+            if unsupported_opcodes.contains(&format!("{:?}", instruction.opcode).as_str()) {
+                found_incompatible.insert(format!("{:?}", instruction.opcode));
+            }
+        }
+
+        // Log incompatible opcodes
+        if !found_incompatible.is_empty() {
+            is_zkevm_safe = false;
+            let opcode_string = found_incompatible.iter().cloned().collect::<Vec<_>>().join(" | ");
+            let log_entry = format!("Bytecode from {}: {}\n", address, opcode_string);
+            log_file.write_all(log_entry.as_bytes())?;
+            if verbose {
+                println!("{}", log_entry);
+            }
+        }
+
+        // Log disassembler output
+        if !disassembler_output.is_empty() {
+            let error_string = disassembler_output
+                .lines()
+                .filter(|line| line.starts_with("Stop decoding"))
+                .collect::<Vec<_>>()
+                .join(" - Error: ");
+
+            if !error_string.is_empty() {
+                let output_log_entry = format!("Bytecode from {}: Error: {}\n", address, error_string);
+                disassembler_logs.push(output_log_entry.clone());
+                if verbose {
+                    println!("{}", output_log_entry);
+                }
+            }
+        }
+
+        // Log the bytecode at the end
+        log_file.write_all(b"\n--- Bytecode ---\n")?;
+        log_file.write_all(format!("Bytecode: 0x{}\n", bytecode.trim_start_matches("0x")).as_bytes())?;        
+
+        // Final results
+        if is_zkevm_safe {
+            println!("zkEVM safe!");
+            println!("No unsupported opcodes found.");
+        } else {
+            println!("Not zkEVM safe!");
+            println!("See logs for details: incompatible_opcodes.log");
+        }
+
+        return Ok(());
+    }
 
     for entry in WalkDir::new(folder).into_iter().filter_map(Result::ok) {
         let path = entry.path();
