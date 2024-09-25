@@ -1,5 +1,6 @@
 use clap::{Arg, Command};
 use evm_disassembler::{disassemble_bytes, Operation};
+use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::error::Error;
@@ -7,9 +8,11 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use walkdir::WalkDir;
-use reqwest::blocking::Client;
 
-fn silent_disassemble_bytes(bytes: Vec<u8>, verbose: bool) -> Result<(Vec<Operation>, String), Box<dyn Error>> {
+fn silent_disassemble_bytes(
+    bytes: Vec<u8>,
+    verbose: bool,
+) -> Result<(Vec<Operation>, String), Box<dyn Error>> {
     if verbose {
         let operations = disassemble_bytes(bytes)?;
         return Ok((operations, String::new()));
@@ -40,7 +43,11 @@ fn silent_disassemble_bytes(bytes: Vec<u8>, verbose: bool) -> Result<(Vec<Operat
     }
 }
 
-fn fetch_bytecode_from_chain(rpc_url: &str, address: &str, verbose: bool) -> Result<String, Box<dyn Error>> {
+fn fetch_bytecode_from_chain(
+    rpc_url: &str,
+    address: &str,
+    verbose: bool,
+) -> Result<String, Box<dyn Error>> {
     let client = Client::new();
     let params = format!(
         r#"{{"jsonrpc":"2.0","method":"eth_getCode","params":["{}", "latest"],"id":1}}"#,
@@ -180,9 +187,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .get_one::<String>("json_path")
         .map(String::as_str)
         .unwrap_or_else(|| match project_type.as_str() {
-            "hardhat" => "deployedBytecode",           // Example path for Hardhat
-            "foundry" => "deployedBytecode.object",    // Example path for Foundry
-            _ => "deployedBytecode.object",            // Default fallback
+            "hardhat" => "deployedBytecode",        // Example path for Hardhat
+            "foundry" => "deployedBytecode.object", // Example path for Foundry
+            _ => "deployedBytecode.object",         // Default fallback
         });
 
     let verbose = matches.get_flag("verbose");
@@ -200,7 +207,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let bytecode = match fetch_bytecode_from_chain(rpc_url, address, verbose) {
             Ok(code) => code,
             Err(e) => {
-                error_log.push_str(&format!("Error fetching bytecode for address {}: {}\n", address, e));
+                error_log.push_str(&format!(
+                    "Error fetching bytecode for address {}: {}\n",
+                    address, e
+                ));
                 if verbose {
                     eprintln!("Error fetching bytecode for address {}: {}", address, e);
                 }
@@ -213,7 +223,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let bytes = match hex::decode(bytecode_without_prefix) {
             Ok(b) => b,
             Err(e) => {
-                error_log.push_str(&format!("Error decoding bytecode for address {}: {}\n", address, e));
+                error_log.push_str(&format!(
+                    "Error decoding bytecode for address {}: {}\n",
+                    address, e
+                ));
                 if verbose {
                     eprintln!("Error decoding bytecode for address {}: {}", address, e);
                 }
@@ -225,9 +238,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (instructions, disassembler_output) = match silent_disassemble_bytes(bytes, verbose) {
             Ok((i, output)) => (i, output),
             Err(e) => {
-                error_log.push_str(&format!("Error disassembling bytecode for address {}: {}\n", address, e));
+                error_log.push_str(&format!(
+                    "Error disassembling bytecode for address {}: {}\n",
+                    address, e
+                ));
                 if verbose {
-                    eprintln!("Error disassembling bytecode for address {}: {}", address, e);
+                    eprintln!(
+                        "Error disassembling bytecode for address {}: {}",
+                        address, e
+                    );
                 }
                 return Ok(());
             }
@@ -244,7 +263,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Log incompatible opcodes
         if !found_incompatible.is_empty() {
             is_zkevm_safe = false;
-            let opcode_string = found_incompatible.iter().cloned().collect::<Vec<_>>().join(" | ");
+            let opcode_string = found_incompatible
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" | ");
             let log_entry = format!("Bytecode from {}: {}\n", address, opcode_string);
             log_file.write_all(log_entry.as_bytes())?;
             if verbose {
@@ -261,7 +284,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .join(" - Error: ");
 
             if !error_string.is_empty() {
-                let output_log_entry = format!("Bytecode from {}: Error: {}\n", address, error_string);
+                let output_log_entry =
+                    format!("Bytecode from {}: Error: {}\n", address, error_string);
                 disassembler_logs.push(output_log_entry.clone());
                 if verbose {
                     println!("{}", output_log_entry);
@@ -271,7 +295,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Log the bytecode at the end
         log_file.write_all(b"\n--- Bytecode ---\n")?;
-        log_file.write_all(format!("Bytecode: 0x{}\n", bytecode.trim_start_matches("0x")).as_bytes())?;        
+        log_file
+            .write_all(format!("Bytecode: 0x{}\n", bytecode.trim_start_matches("0x")).as_bytes())?;
 
         // Final results
         if is_zkevm_safe {
@@ -285,12 +310,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let mut total_contracts_checked = 0;
+
     for entry in WalkDir::new(folder).into_iter().filter_map(Result::ok) {
         let path = entry.path();
         let mut found_incompatible = HashSet::new();
         let mut disassembler_output = String::new();
 
         if path.extension().map_or(false, |ext| ext == "json") {
+            total_contracts_checked += 1;
             let file_content = fs::read_to_string(path)?;
             let json_value: Value = serde_json::from_str(&file_content)?;
 
@@ -393,6 +421,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // Check if no contracts were processed
+    if total_contracts_checked == 0 {
+        eprintln!("Error: No contracts were found or checked in the specified folder.");
+        eprintln!("Please make sure you've specified the correct folder.");
+        return Err("No contracts checked".into());
+    }
+
     if !disassembler_logs.is_empty() {
         log_file.write_all(b"\n--- Disassembler Messages ---\n\n")?;
         for log in disassembler_logs {
@@ -410,10 +445,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if is_zkevm_safe {
         println!("zkEVM safe!");
-        println!("No unsuported opcodes found: {:?}", unsupported_opcodes);
+        println!("No unsupported opcodes found: {:?}", unsupported_opcodes);
+        println!("Total contracts checked: {}", total_contracts_checked);
     } else {
         println!("Not zkEVM safe!");
-        println!("{} contracts with unsupported opcodes in ./{}.", contracts_with_unsupported_opcodes, folder);
+        println!(
+            "{} out of {} contracts contain unsupported opcodes in ./{}.",
+            contracts_with_unsupported_opcodes, total_contracts_checked, folder
+        );
         println!("See logs for details: incompatible_opcodes.log");
     }
 
